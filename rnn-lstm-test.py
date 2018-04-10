@@ -32,7 +32,7 @@ with open(poetry_file, "r", encoding='utf-8', ) as f:
             content = content.replace(' ', '')
             if '_' in content or '(' in content or '（' in content or '《' in content or '[' in content:
                 continue
-            if len(content) < 5 or len(content) > 79:
+            if len(content) < 12 or len(content) > 79:
                 continue
             content = '[' + content + ']'
             poetrys.append(content)
@@ -75,7 +75,7 @@ for i in range(n_sent):
     for row in range(len(bb)):
         dx[row, :len(bb[row])] = bb[row]
     dy = np.copy(dx)
-    dy[:, :-1] = dx[:, 1:]
+    dy[:-1], dy[-1] = dx[1:] , dx[0]
     data_X.append(dx)
     data_y.append(dy)
 
@@ -106,10 +106,27 @@ class CharRNN(nn.Module):
     def forward(self, input, hidden):
         # print(input, hidden)
         batch_size = input.size(0)
+        if hidden == None:
+            hidden = self.init_hidden(batch_size)
+            
+        # print("input shape: ", input.shape)
+        
         encoded = self.encoder(input)
-        output, hidden = self.rnn(encoded.view(1, batch_size, -1), hidden)
-        output = self.decoder(output.view(batch_size, -1))
-        return output, hidden
+        
+        # print("embed shape: ", encoded.shape)
+        
+        encoded = encoded.permute(1, 0, 2)
+        # output, hidden = self.rnn(encoded.view(1, batch_size, -1), hidden)
+        output, h0 = self.rnn(encoded, hidden)
+        
+        le, mb, hd = output.shape
+        out = output.view(le * mb, hd)
+        
+        output = self.decoder(out)
+        output = output.view(le, mb, -1)
+        output = output.permute(1, 0, 2).contiguous()
+        output = output.view(-1, output.shape[2])
+        return output, h0
 
     # def forward2(self, input, hidden):
     #     encoded = self.encoder(input.view(1, -1))
@@ -138,6 +155,7 @@ def train(input, target):
     gm.zero_grad()
     loss = 0
 
+    hidden_size = input.shape[1]
     for i in range(hidden_size):
         output, hidden = gm(input[:, i], hidden)
         ov = output.view(batch_size, -1)
@@ -151,6 +169,24 @@ def train(input, target):
     m_opt.step()
     return loss
 
+def train2(input, target, hidden=None):
+    
+    loss = 0
+    
+    # print("input size: ", input.shape, " target size: ", target.shape)
+    
+    output, hidden = gm(input, hidden)
+    
+    # print("output size: ", output.shape)
+    
+    loss = criterion(output, target.view(-1))
+    
+    m_opt.zero_grad()
+    loss.backward()
+    
+    m_opt.step()
+    return loss, hidden
+
 def to_word(n):
     for k,v in word_num_map.items():
         if v == n:
@@ -160,7 +196,7 @@ def to_word(n):
 use_gpu = True
 
 input_size = len(words)
-hidden_size = 10
+hidden_size = 512
 
 
 gm = None
@@ -185,7 +221,9 @@ if use_gpu:
 if args.mode == 'train':
     epochs = args.epochs
     losses = []
+    
     for e in range(epochs):
+        
         for i in range(len(data_X)):
             x0 = data_X[i]
             x0 = torch.LongTensor(x0)
@@ -198,7 +236,7 @@ if args.mode == 'train':
                 x0 = x0.cuda()
                 y0 = y0.cuda()
 
-            loss = train(x0, y0)
+            loss, hidden = train2(x0, y0)
 
             # print(loss.data[0] / 10)
             # break
