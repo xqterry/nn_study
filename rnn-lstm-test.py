@@ -95,7 +95,7 @@ class CharRNN(nn.Module):
         if self.model == "gru":
             self.rnn = nn.GRU(hidden_size, hidden_size, n_layers)
         elif self.model == "lstm":
-            self.rnn = nn.LSTM(hidden_size, hidden_size, n_layers)
+            self.rnn = nn.LSTM(hidden_size, hidden_size, n_layers, dropout=0.5)
         self.decoder = nn.Linear(hidden_size, output_size)
 
         if gpu:
@@ -109,11 +109,11 @@ class CharRNN(nn.Module):
         if hidden == None:
             hidden = self.init_hidden(batch_size)
             
-        # print("input shape: ", input.shape)
+        #print("input shape: ", input.shape)
         
         encoded = self.encoder(input)
         
-        # print("embed shape: ", encoded.shape)
+        #print("embed shape: ", encoded.shape)
         
         encoded = encoded.permute(1, 0, 2)
         # output, hidden = self.rnn(encoded.view(1, batch_size, -1), hidden)
@@ -172,6 +172,7 @@ def train(input, target):
 def train2(input, target, hidden=None):
     
     loss = 0
+    # gm.zero_grad()
     
     # print("input size: ", input.shape, " target size: ", target.shape)
     
@@ -182,8 +183,12 @@ def train2(input, target, hidden=None):
     loss = criterion(output, target.view(-1))
     
     m_opt.zero_grad()
+    
     loss.backward()
     
+    # Clip gradient.
+    nn.utils.clip_grad_norm(gm.parameters(), 5)
+            
     m_opt.step()
     return loss, hidden
 
@@ -192,6 +197,106 @@ def to_word(n):
         if v == n:
             return k
     return ' '
+
+def pick_top_n(preds, top_n=5):
+    # print(preds.shape)
+    top_pred_prob, top_pred_label = torch.topk(preds, top_n, 1)
+    top_pred_prob /= torch.sum(top_pred_prob)
+    top_pred_prob = top_pred_prob.squeeze(0).cpu().numpy()
+    top_pred_label = top_pred_label.squeeze(0).cpu().numpy()
+    
+    # top_pred_prob = torch.nn.functional.relu(top_pred_prob)
+    
+    #print("P, L: ", top_pred_prob, top_pred_label)
+    
+    #c = np.random.choice(top_pred_label, size=1, p=top_pred_prob)
+    #print("t: ", type(top_pred_label[0]), top_pred_label[0].item())
+    
+    #return top_pred_label[0].item()
+    return np.random.choice(top_pred_label, size=1)
+
+def gen():
+    gm.eval()
+    
+    hidden = gm.init_hidden(1)
+    pk = random.choice(list(word_num_map.values()))
+    pi = [pk]
+    pi = torch.LongTensor(pi)[None]
+    
+    #pi[0] = pk
+    # pi = pi.unsqueeze(0)
+    
+    # pi = Variable(pi)
+
+    pks =  [random.choice(list(word_num_map.values())) for c in range(5) ]
+    
+    samples = torch.LongTensor(pks)[None]
+    samples = pi
+    
+    if use_gpu:
+        pi = pi.cuda()
+        samples = samples.cuda()
+
+    input_text = Variable(samples)
+    
+    _, hidden = gm(input_text, hidden)
+    
+    predicted = to_word(pk)
+
+    # output, hidden = gm(pi, hidden)
+    #pi = pi[:, -1]
+
+    input_text = input_text[:, -1][:, None]
+    for p in range(args.genlen):
+        output, hidden = gm(input_text, hidden)
+        od = output.data.view(-1).div(0.8).exp()
+        ti = torch.multinomial(od, 1)[0]
+        pred = [ti]
+        #pred = pick_top_n(output.data)
+        #ti = pred[0]
+
+        input_text = Variable(torch.LongTensor(pred))[None]
+        if use_gpu:
+            input_text = input_text.cuda()
+
+        predicted += to_word(ti)
+
+    print(predicted)
+    
+def gen2():
+    gm.eval()
+    
+    hidden = gm.init_hidden(1)
+    
+    test = '天青色等烟雨'
+    pks =  [random.choice(list(word_num_map.values())) for c in range(5) ]
+    
+    pks = [word_num_map[c] for c in test]
+    
+    samples = torch.LongTensor(pks)[None]
+    
+    if use_gpu:
+        samples = samples.cuda()
+
+    input_text = Variable(samples)
+    
+    _, hidden = gm(input_text, hidden)
+    
+    predicted = to_word(pks[0])
+
+    input_text = input_text[:, -1][:, None]
+    for p in range(args.genlen):
+        output, hidden = gm(input_text, hidden)
+        pred = pick_top_n(output.data)
+        ti = pred[0]
+
+        input_text = Variable(torch.LongTensor(pred))[None]
+        if use_gpu:
+            input_text = input_text.cuda()
+
+        predicted += to_word(ti)
+
+    print(predicted)
 
 use_gpu = True
 
@@ -204,13 +309,14 @@ fn = "%s-test" % args.model
 if args.layers > 1:
     fn += "-%d" % args.layers
 
+gm = CharRNN(input_size, hidden_size, input_size, use_gpu, n_layers=args.layers, model=args.model)
+
 if args.restore:
-    gm = torch.load(fn)
-else:
-    gm = CharRNN(input_size, hidden_size, input_size, use_gpu, n_layers=args.layers, model=args.model)
+    gm.load_state_dict(torch.load(fn + ".st"))
+    
 
 # m_opt = torch.optim.Adam(gm.parameters(), lr=0.01)
-m_opt = torch.optim.RMSprop(gm.parameters(), lr=0.01)
+m_opt = torch.optim.RMSprop(gm.parameters(), lr=0.0005)
 criterion = nn.CrossEntropyLoss()#.cuda()
 
 if use_gpu:
@@ -223,7 +329,7 @@ if args.mode == 'train':
     losses = []
     
     for e in range(epochs):
-        
+        gm.train()
         for i in range(len(data_X)):
             x0 = data_X[i]
             x0 = torch.LongTensor(x0)
@@ -244,6 +350,11 @@ if args.mode == 'train':
 
         print("%d/%d - loss %f" % (e + 1, epochs, np.mean(losses)))
         losses = []
+        
+        if e != 0 and e % 10 == 0:
+            torch.save(gm.state_dict(), fn + ".st")
+            gen()
+            
 
     # plt.plot(losses)
     # plt.show()
@@ -252,28 +363,4 @@ if args.mode == 'train':
 
 elif args.mode == 'gen':
     print("generate ")
-    hidden = gm.init_hidden(1)
-    pk = random.choice(list(word_num_map.values()))
-    pi = torch.LongTensor(1)
-    pi[0] = pk
-    pi = pi.unsqueeze(0)
-    pi = Variable(pi)
-
-    if use_gpu:
-        pi = pi.cuda()
-
-    predicted = "" #to_word(pk)
-
-    output, hidden = gm(pi[:, 0], hidden)
-    pi = pi[:, -1]
-
-    for p in range(args.genlen):
-        output, hidden = gm(pi, hidden)
-        od = output.data.view(-1).div(0.8).exp()
-        ti = torch.multinomial(od, 1)[0]
-
-        pi[0] = ti
-
-        predicted += to_word(ti)
-
-    print(predicted)
+    gen2()
