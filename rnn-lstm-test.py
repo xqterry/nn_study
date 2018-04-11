@@ -22,8 +22,11 @@ argparser.add_argument('-a', '--rate', type=float, default=0.0005)
 
 args = argparser.parse_args()
 
+
+is_first_time = True
+
 # read the fucking data
-poetry_file = './data/poetry3000.txt'
+poetry_file = './data/poetry.txt'
 
 # 诗集
 poetrys = []
@@ -81,9 +84,11 @@ for i in range(n_sent):
     for row in range(len(bb)):
         dx[row, :len(bb[row])] = bb[row]
     dy = np.copy(dx)
-    dy[:-1], dy[-1] = dx[1:] , dx[0]
+    dy[:,:-1], dy[:, -1] = dx[:, 1:] , dx[:,0]
     data_X.append(dx)
     data_y.append(dy)
+    
+    #print(dx, " === ", dy)
 
 # print(len(data_X))
 
@@ -109,7 +114,7 @@ class CharRNN(nn.Module):
             self.rnn = self.rnn.cuda()
             self.decoder = self.decoder.cuda()
 
-    def forward(self, input, hidden):
+    def forward(self, input, hidden=None):
         # print(input, hidden)
         batch_size = input.size(0)
         if hidden == None:
@@ -173,24 +178,28 @@ def train(input, target):
 
     loss.backward()
     m_opt.step()
-    return loss
+    return loss, hidden
 
 def train2(input, target, hidden=None):
-    
+    global is_first_time
     loss = 0
-    #gm.zero_grad()
+    gm.zero_grad()
     
-    # print("input size: ", input.shape, " target size: ", target.shape)
+    #print("input size: ", input.shape, " target size: ", target.shape)
     
-    output, hidden = gm(input, hidden)
+    output, hidden = gm(input)
     
-    # print("output size: ", output.shape)
+    #print("output size: ", output.shape)
     
     loss = criterion(output, target.view(-1))
     
     m_opt.zero_grad()
     
-    loss.backward()
+    if is_first_time:
+        loss.backward(retain_graph=True)
+        #is_first_time = False
+    else:
+        loss.backward()
     
     # Clip gradient.
     nn.utils.clip_grad_norm(gm.parameters(), 5)
@@ -220,6 +229,7 @@ def pick_top_n(preds, top_n=5):
     
     #return top_pred_label[0].item()
     return np.random.choice(top_pred_label, size=1)
+    #return np.array([top_pred_label[0]])
 
 def decayLr(optm):
     args.rate *= 0.8
@@ -335,16 +345,41 @@ if use_gpu:
     criterion = criterion.cuda()
 
 
+
 if args.mode == 'train':
     epochs = args.epochs
     losses = []
     
+    gm.train()
+    
+    is_first_time = False
+    show_text = True
+    cc = 0
+    
     for e in range(epochs):
-        gm.train()
+        hidden = gm.init_hidden(batch_size)
+    
         for i in range(len(data_X)):
             x0 = data_X[i]
+            y0 = data_y[i]
+            if show_text:
+                for xx in x0:
+                    a = [to_word(c) for c in xx]
+                    print ("input: ", a)
+                    cc += 1
+                    if cc > 10:
+                        break
+                cc = 0
+                for xx in y0:
+                    a = [to_word(c) for c in xx]
+                    print ("target: ", a)
+                    cc += 1
+                    if cc > 10:
+                        break
+                
+                show_text = False
             x0 = torch.LongTensor(x0)
-            y0 = torch.LongTensor(data_y[i])
+            y0 = torch.LongTensor(y0)
 
             x0 = Variable(x0)#.cuda()
             y0 = Variable(y0)#.cuda()
@@ -353,7 +388,7 @@ if args.mode == 'train':
                 x0 = x0.cuda()
                 y0 = y0.cuda()
 
-            loss, hidden = train2(x0, y0)
+            loss, hidden = train2(x0, y0, hidden)
 
             # print(loss.data[0] / 10)
             # break
