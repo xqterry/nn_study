@@ -18,10 +18,12 @@ argparser.add_argument('-e', '--epochs', type=int, default=100)
 argparser.add_argument('-g', '--genlen', type=int, default=25)
 argparser.add_argument('-l', '--layers', type=int, default=1)
 argparser.add_argument('-n', '--model', type=str, default='lstm')
+argparser.add_argument('-a', '--rate', type=float, default=0.0005)
+
 args = argparser.parse_args()
 
 # read the fucking data
-poetry_file = './data/poetry.txt'
+poetry_file = './data/poetry3000.txt'
 
 # 诗集
 poetrys = []
@@ -34,7 +36,7 @@ with open(poetry_file, "r", encoding='utf-8', ) as f:
                 continue
             if len(content) < 12 or len(content) > 79:
                 continue
-            content = '[' + content + ']'
+            # content = '[' + content + ']'
             poetrys.append(content)
         except Exception as e:
             pass
@@ -42,6 +44,8 @@ with open(poetry_file, "r", encoding='utf-8', ) as f:
 # 按诗的字数排序
 poetrys = sorted(poetrys, key=lambda line: len(line))
 # print('唐诗总数: ', len(poetrys))
+
+#print(poetrys)
 
 # 统计每个字出现次数
 all_words = []
@@ -62,7 +66,9 @@ poetrys_vector = [list(map(to_num, poetry)) for poetry in poetrys]
 # [339, 3, 133, 31, 302, 653, 512, 0, 37, 148, 294, 25, 54, 833, 3, 1, 965, 1315, 377, 1700, 562, 21, 37, 0, 2, 1253, 21, 36, 264, 877, 809, 1]
 # ....]
 
-batch_size = 64
+# print(poetrys_vector)
+
+batch_size = 128
 n_sent = len(poetrys_vector) // batch_size
 data_X = []
 data_y = []
@@ -95,7 +101,7 @@ class CharRNN(nn.Module):
         if self.model == "gru":
             self.rnn = nn.GRU(hidden_size, hidden_size, n_layers)
         elif self.model == "lstm":
-            self.rnn = nn.LSTM(hidden_size, hidden_size, n_layers, dropout=0.5)
+            self.rnn = nn.LSTM(hidden_size, hidden_size, n_layers, dropout=0.5, batch_first=True)
         self.decoder = nn.Linear(hidden_size, output_size)
 
         if gpu:
@@ -115,16 +121,16 @@ class CharRNN(nn.Module):
         
         #print("embed shape: ", encoded.shape)
         
-        encoded = encoded.permute(1, 0, 2)
+        # encoded = encoded.permute(1, 0, 2)
         # output, hidden = self.rnn(encoded.view(1, batch_size, -1), hidden)
         output, h0 = self.rnn(encoded, hidden)
         
         le, mb, hd = output.shape
-        out = output.view(le * mb, hd)
+        # out = output.view(le * mb, hd)
         
-        output = self.decoder(out)
-        output = output.view(le, mb, -1)
-        output = output.permute(1, 0, 2).contiguous()
+        output = self.decoder(output)
+        #output = output.view(le, mb, -1)
+        # output = output.permute(1, 0, 2).contiguous()
         output = output.view(-1, output.shape[2])
         return output, h0
 
@@ -172,7 +178,7 @@ def train(input, target):
 def train2(input, target, hidden=None):
     
     loss = 0
-    # gm.zero_grad()
+    #gm.zero_grad()
     
     # print("input size: ", input.shape, " target size: ", target.shape)
     
@@ -214,6 +220,11 @@ def pick_top_n(preds, top_n=5):
     
     #return top_pred_label[0].item()
     return np.random.choice(top_pred_label, size=1)
+
+def decayLr(optm):
+    args.rate *= 0.8
+    for param_group in optm.param_groups:
+            param_group['lr'] = args.rate
 
 def gen():
     gm.eval()
@@ -268,7 +279,7 @@ def gen2():
     
     hidden = gm.init_hidden(1)
     
-    test = '天青色等烟雨'
+    test = '青'
     pks =  [random.choice(list(word_num_map.values())) for c in range(5) ]
     
     pks = [word_num_map[c] for c in test]
@@ -346,14 +357,18 @@ if args.mode == 'train':
 
             # print(loss.data[0] / 10)
             # break
-            losses.append(loss.data[0] / 10)
+            losses.append(loss.data[0])
 
         print("%d/%d - loss %f" % (e + 1, epochs, np.mean(losses)))
         losses = []
         
         if e != 0 and e % 10 == 0:
             torch.save(gm.state_dict(), fn + ".st")
-            gen()
+            gen2()
+            
+        if e != 0 and e % 100 == 0:
+            decayLr(m_opt)
+            
             
 
     # plt.plot(losses)
